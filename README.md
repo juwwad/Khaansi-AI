@@ -1,3 +1,14 @@
+---
+title: Khaansi AI
+emoji: 🩺
+colorFrom: green
+colorTo: gray
+sdk: streamlit
+sdk_version: 1.63.0
+app_file: app.py
+pinned: false
+---
+
 # Khaansi AI 🩺
 
 **Urdu voice-based TB screening assistant** — built for the Alibaba Cloud AI Hackathon Pakistan 2026.
