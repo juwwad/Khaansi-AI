@@ -521,6 +521,87 @@ def run_voice_mode():
                 st.rerun()
             return
 
+        # --- Step 2b: let the user check/correct what was understood ---
+        # Speech recognition can mishear numbers (22 -> 2, hafta -> mahina),
+        # so nothing is scored until the user confirms the values.
+        if not vs.get("v_confirmed"):
+            st.subheader("Step 2b — Check your answers")
+            st.caption(
+                "Speech recognition can mishear numbers. Please correct anything "
+                "that is wrong, then confirm."
+            )
+            a = vs.v_answers
+            YN = ["Not answered", "Yes", "No"]
+            SEX = ["Not answered", "male", "female"]
+            TBT = ["Not answered", "pulmonary", "extrapulmonary", "unknown"]
+
+            def _yn_idx(v):
+                return 1 if v is True else (2 if v is False else 0)
+
+            def _yn_val(c):
+                return True if c == "Yes" else (False if c == "No" else None)
+
+            def _num(key):
+                v = a.get(key)
+                return None if v is None else int(round(float(v)))
+
+            with st.form("confirm_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    sex_c = st.selectbox(
+                        "Sex", SEX, index=SEX.index(a["sex"]) if a.get("sex") in SEX else 0
+                    )
+                    age_c = st.number_input(
+                        "Age (years)", min_value=0, max_value=120, value=_num("age")
+                    )
+                    dur_c = st.number_input(
+                        "Cough duration (days)", min_value=0, max_value=365,
+                        value=_num("reported_cough_dur"),
+                    )
+                    smoke_c = st.selectbox(
+                        "Smoked in the last week", YN, index=_yn_idx(a.get("smoke_lweek"))
+                    )
+                with c2:
+                    hemo_c = st.selectbox(
+                        "Coughing up blood", YN, index=_yn_idx(a.get("hemoptysis"))
+                    )
+                    fever_c = st.selectbox("Fever", YN, index=_yn_idx(a.get("fever")))
+                    sweat_c = st.selectbox(
+                        "Night sweats", YN, index=_yn_idx(a.get("night_sweats"))
+                    )
+                    wl_c = st.selectbox(
+                        "Unexplained weight loss", YN, index=_yn_idx(a.get("weight_loss"))
+                    )
+                    tbp_c = st.selectbox(
+                        "Prior TB", YN, index=_yn_idx(a.get("tb_prior"))
+                    )
+                    tbt_c = st.selectbox(
+                        "If prior TB — type", TBT,
+                        index=TBT.index(a["tb_prior_type"]) if a.get("tb_prior_type") in TBT else 0,
+                    )
+                confirmed = st.form_submit_button("✅ Confirm and analyze")
+
+            if confirmed:
+                new = {}
+                if sex_c != "Not answered":
+                    new["sex"] = sex_c
+                if age_c is not None:
+                    new["age"] = age_c
+                if dur_c is not None:
+                    new["reported_cough_dur"] = dur_c
+                for key, choice in [
+                    ("smoke_lweek", smoke_c), ("hemoptysis", hemo_c), ("fever", fever_c),
+                    ("night_sweats", sweat_c), ("weight_loss", wl_c), ("tb_prior", tbp_c),
+                ]:
+                    if _yn_val(choice) is not None:
+                        new[key] = _yn_val(choice)
+                if new.get("tb_prior") is True and tbt_c != "Not answered":
+                    new["tb_prior_type"] = tbt_c
+                vs.v_answers = new
+                vs.v_confirmed = True
+                st.rerun()
+            return
+
         # --- all questions done: run the screening model ---
         with st.spinner("Running screening model..."):
             values = va.build_symptom_values(vs.v_answers)
@@ -557,6 +638,7 @@ def run_voice_mode():
         for k in [
             "v_chat", "v_qa_index", "v_answers", "v_agent_line", "v_agent_voice",
             "v_cough_bytes", "v_cough_emb", "v_result", "v_retry", "v_played",
+            "v_confirmed",
         ]:
             st.session_state.pop(k, None)
         st.rerun()

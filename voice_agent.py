@@ -59,15 +59,15 @@ def agent_line(name: str, agent_gender: str) -> str:
 # ordered must-ask questions: (field_key, urdu_question)
 MUST_ASK = [
     ("sex", "بتائیے، آپ مرد ہیں یا عورت؟"),
-    ("age", "آپ کی عمر کتنی سال ہے؟"),
-    ("reported_cough_dur", "آپ کی یہ کھانسی کتنے دن سے ہے؟"),
-    ("hemoptysis", "کیا کھانسی کے ساتھ خون بھی آتا ہے؟"),
-    ("fever", "کیا آپ کو بخار آتا ہے؟"),
-    ("night_sweats", "کیا رات کو سوتے وقت پسینہ آتا ہے؟"),
-    ("weight_loss", "کیا آپ کا وزن بغیر کسی وجہ کم ہو رہا ہے؟"),
-    ("tb_prior", "کیا آپ کو پہلے کبھی ٹی بی کی بیماری ہوئی ہے؟"),
+    ("age", "آپ کی عمر کتنی ہے؟"),
+    ("reported_cough_dur", "آپ کی یہ کھانسی کتنے دن، ہفتے یا مہینے سے ہے؟"),
+    ("hemoptysis", "کیا آپ کو کھانسی میں خون آتا ہے یا نہیں؟"),
+    ("fever", "کیا آپ کو بخار ہے یا نہیں؟"),
+    ("night_sweats", "کیا آپ کو رات کو پسینہ آتا ہے یا نہیں؟"),
+    ("weight_loss", "کیا آپ کا وزن بغیر کسی وجہ کے کم ہوا ہے یا نہیں؟"),
+    ("tb_prior", "کیا آپ کو پہلے کبھی ٹی بی ہوئی ہے یا نہیں؟"),
     ("tb_prior_type", "اگر ٹی بی ہوئی تھی، تو کیا وہ پھیپھڑوں میں تھی یا جسم کے کسی اور حصے میں؟"),
-    ("smoke_lweek", "کیا آپ نے پچھلے ہفتے سگریٹ یا تمباکو استعمال کیا ہے؟"),
+    ("smoke_lweek", "کیا آپ نے پچھلے ہفتے سگریٹ یا تمباکو استعمال کیا ہے یا نہیں؟"),
 ]
 
 # ----------------------------
@@ -134,19 +134,37 @@ def build_symptom_values(answers: dict) -> dict:
 
 _whisper_model = None
 
+# "base" misheard numbers often (22 -> 2, hafta -> mahina). "small" is what
+# test_whisper.py already uses. Try "medium" if your laptop is fast enough.
+WHISPER_MODEL_SIZE = "small"
+
+# Vocabulary hint only (numbers + time units), NOT a full sentence, so Whisper
+# is nudged toward them without echoing a plausible answer back.
+WHISPER_PROMPT = (
+    "ایک، دو، تین، چار، پانچ، دس، بیس، بائیس، پچیس، تیس، پینتیس، چالیس، پچاس۔ "
+    "دن، ہفتہ، ہفتے، مہینہ، مہینے، سال۔"
+)
+
 
 def get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
 
-        _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+        _whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
     return _whisper_model
 
 
 def transcribe(audio_bytes: bytes) -> str:
     model = get_whisper_model()
-    segments, _ = model.transcribe(io.BytesIO(audio_bytes), language="ur")
+    segments, _ = model.transcribe(
+        io.BytesIO(audio_bytes),
+        language="ur",
+        beam_size=5,                       # more careful decoding
+        vad_filter=True,                   # ignore silence / background noise
+        condition_on_previous_text=False,  # avoid repeated-text drift
+        initial_prompt=WHISPER_PROMPT,     # bias toward numbers and time units
+    )
     return " ".join(s.text.strip() for s in segments).strip()
 
 
@@ -199,8 +217,8 @@ Respond with ONLY a JSON object, no other text:
 
 Extraction rules:
 - sex: "male", "female", or null.
-- age: number of years, or null.
-- reported_cough_dur: number of days, or null. Convert weeks/months to days (e.g. "do hafte" = 14).
+- age: the exact number of years the patient said, or null. Convert Urdu number words to digits (e.g. بائیس = 22, پچیس = 25, تیس = 30, پینتیس = 35). Never return a single digit unless the patient actually said a single-digit number.
+- reported_cough_dur: number of days, or null. ہفتہ/ہفتے = week (7 days), مہینہ/مہینے = month (30 days); do not confuse them. Examples: "ایک ہفتہ" = 7, "دو ہفتے" = 14, "تین ہفتے" = 21, "ایک مہینہ" = 30, "دو مہینے" = 60.
 - hemoptysis, fever, night_sweats, weight_loss, tb_prior, smoke_lweek: true, false, or null.
 - tb_prior_type: "pulmonary", "extrapulmonary", or "unknown", or null.
 - Use null for every field the patient's answer does not clearly address. Never guess or invent values.
@@ -260,6 +278,31 @@ def _parse_json_block(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+AGE_RANGE = (5, 110)      # an "age 2" is almost surely a mis-heard "22" -> re-ask
+COUGH_DAYS_RANGE = (0, 365)
+
+
+def sanitize_extracted(extracted: dict) -> dict:
+    """Drop implausible numbers (set to None) so the app re-asks instead of
+    silently scoring on a mis-heard value. Confirmation screen catches the rest."""
+    out = dict(extracted)
+
+    def _in_range(key, lo, hi):
+        v = out.get(key)
+        if v is None:
+            return
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            out[key] = None
+            return
+        out[key] = v if lo <= v <= hi else None
+
+    _in_range("age", *AGE_RANGE)
+    _in_range("reported_cough_dur", *COUGH_DAYS_RANGE)
+    return out
+
+
 def parse_answer(current_question: str, patient_answer: str, fields_to_extract: list,
                  *, agent_gender: str) -> dict:
     """One Qwen call per turn: returns {"speak": str, "extracted": dict}.
@@ -276,6 +319,7 @@ def parse_answer(current_question: str, patient_answer: str, fields_to_extract: 
     data = _parse_json_block(out)
     if "speak" not in data or "extracted" not in data:
         raise ValueError(f"unexpected Qwen output: {out!r}")
+    data["extracted"] = sanitize_extracted(data["extracted"])
     return data
 
 
