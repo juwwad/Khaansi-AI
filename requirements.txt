@@ -5,6 +5,11 @@ soundfile==0.14.0
 joblib==1.6.0
 scikit-learn==1.6.1
 tensorflow==2.21.0
+# tf-keras MUST track the tensorflow version above. huggingface_hub loads the
+# gated google/hear SavedModel through Keras 2; without tf_keras it falls back
+# to tf.keras (Keras 3), which cannot load SavedModel and fails with
+# "File format not supported".
+tf-keras==2.21.0
 huggingface_hub==0.36.2
 faster-whisper==1.2.1
 edge-tts==7.2.8
